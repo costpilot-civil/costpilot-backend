@@ -32,3 +32,21 @@ class ProjectResponse(BaseModel):
     updated_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ProjectUpdate(BaseModel):
+    name: str | None = None
+    project_number: str | None = None
+    client: str | None = None
+    location: str | None = None
+    description: str | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value: str | None) -> str:
+        if value is None or not value.strip():
+            raise ValueError("Project name must not be empty.")
+
+        return value.strip()
