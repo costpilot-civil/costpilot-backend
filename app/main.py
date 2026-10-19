@@ -1,9 +1,12 @@
+"""Merged example; preserve your actual application's other routers."""
+
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
 from app.api.routes.health import router as health_router
+from app.api.routes.matching import router as matching_router
 from app.api.routes.projects import router as projects_router
 from app.api.routes.tenders import router as tenders_router
 from app.infrastructure.config import Settings
@@ -28,6 +31,7 @@ def create_app() -> FastAPI:
     app.include_router(health_router)
     app.include_router(projects_router)
     app.include_router(tenders_router)
+    app.include_router(matching_router)
     return app
 
 

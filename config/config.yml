@@ -1,0 +1,20 @@
+embedding:
+  bge-m3:
+    name: BAAI/bge-m3
+    version: v1
+    path: /home/guanlin/projects/costpilot/models/embedding/bge-m3
+
+reranking:
+  bge-reranker:
+    name: BAAI/bge-reranker-v2-m3
+    version: v1
+    path: /home/guanlin/projects/costpilot/models/reranking/bge-reranker-v2-m3
+
+matching:
+  retrieval_top_k: 20
+  bm25_candidate_pool: 300
+  fusion_top_k: 20
+  rerank_top_k: 5
+  rrf_k: 60
+  bm25_k1: 1.5
+  bm25_b: 0.75
