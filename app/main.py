@@ -1,14 +1,17 @@
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI
 
 from app.api.routes.health import router as health_router
+from app.api.routes.projects import router as projects_router
 from app.infrastructure.config import Settings
 from app.infrastructure.database import create_db_pool
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, Any]:
     settings = Settings()  # pyright: ignore[reportCallIssue]
     pool = create_db_pool(settings)
 
@@ -29,6 +32,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(health_router)
+    app.include_router(projects_router)
 
     return app
 
