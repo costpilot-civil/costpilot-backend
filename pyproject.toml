@@ -22,3 +22,7 @@ dev = [
 
 [tool.uv.sources]
 costpilot-core = { path = "../costpilot-core", editable = true }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
