@@ -54,7 +54,7 @@ class TenderRepository:
 
             cursor.execute(
                 """
-                INSERT INTO lv_documents (
+                INSERT INTO tender_documents (
                     project_id, file_name, file_type,
                     storage_path, file_hash, status, parsed_at
                 )
@@ -92,8 +92,8 @@ class TenderRepository:
             if isinstance(node, TenderCategory):
                 cursor.execute(
                     """
-                    INSERT INTO lv_categories (
-                        lv_document_id, parent_id, oz, number_part,
+                    INSERT INTO tender_categories (
+                        tender_document_id, parent_id, oz, number_part,
                         name, level, sort_order
                     )
                     VALUES (%s, %s, %s, %s, %s, %s, %s)
@@ -123,12 +123,12 @@ class TenderRepository:
                 self._validate_quantity(node.quantity)
                 cursor.execute(
                     """
-                    INSERT INTO lv_positions (
-                        lv_document_id, parent_id, category_id,
-                        oz, positionsnummer, kurztext, langtext,
-                        menge, einheit, level, sort_order
+                    INSERT INTO tender_items (
+                        tender_document_id, category_id,
+                        oz, number_part, short_text, long_text,
+                        quantity, unit, level, sort_order
                     )
-                    VALUES (%s, NULL, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
                     """,
                     (
                         document_id,
@@ -168,7 +168,7 @@ class TenderRepository:
                 SELECT id, project_id, file_name, file_type,
                        file_hash, status, parsed_at,
                        created_at, updated_at
-                FROM lv_documents
+                FROM tender_documents
                 WHERE project_id = %s
                 ORDER BY created_at DESC, id DESC;
                 """,
@@ -186,7 +186,7 @@ class TenderRepository:
                 SELECT id, project_id, file_name, file_type,
                        file_hash, status, parsed_at,
                        created_at, updated_at
-                FROM lv_documents
+                FROM tender_documents
                 WHERE id = %s AND project_id = %s;
                 """,
                 (tender_id, project_id),
@@ -199,8 +199,8 @@ class TenderRepository:
             cursor.execute(
                 """
                 SELECT id, parent_id, oz, number_part, name, sort_order
-                FROM lv_categories
-                WHERE lv_document_id = %s;
+                FROM tender_categories
+                WHERE tender_document_id = %s;
                 """,
                 (tender_id,),
             )
@@ -208,10 +208,10 @@ class TenderRepository:
 
             cursor.execute(
                 """
-                SELECT id, category_id, oz, positionsnummer,
-                       kurztext, langtext, menge, einheit, sort_order
-                FROM lv_positions
-                WHERE lv_document_id = %s;
+                SELECT id, category_id, oz, number_part,
+                       short_text, long_text, quantity, unit, sort_order
+                FROM tender_items
+                WHERE tender_document_id = %s;
                 """,
                 (tender_id,),
             )
@@ -236,25 +236,18 @@ class TenderRepository:
                 raise ValueError("Tender item path is empty.")
 
             nodes = detail.structure.nodes
-
             for index in reference.path[:-1]:
                 parent = nodes[index]
-
                 if not isinstance(parent, TenderCategory):
                     raise TypeError("Invalid Tender category path.")
-
                 nodes = parent.children
 
             node = nodes[reference.path[-1]]
-
             if not isinstance(node, TenderItem):
                 raise TypeError("Tender reference does not point to an item.")
 
             result.append(
-                TenderItemRecord(
-                    position_id=reference.position_id,
-                    item=node,
-                )
+                TenderItemRecord(position_id=reference.position_id, item=node)
             )
 
         return result
@@ -292,11 +285,11 @@ class TenderRepository:
         for row in item_rows:
             item = TenderItem(
                 oz=row["oz"],
-                number_part=row["positionsnummer"],
-                short_text=row["kurztext"],
-                long_text=row["langtext"],
-                quantity=row["menge"],
-                unit=row["einheit"],
+                number_part=row["number_part"],
+                short_text=row["short_text"],
+                long_text=row["long_text"],
+                quantity=row["quantity"],
+                unit=row["unit"],
             )
             ordering[id(item)] = (row["sort_order"] or 0, row["id"])
             position_ids[id(item)] = row["id"]
