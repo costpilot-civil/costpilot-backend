@@ -4,7 +4,10 @@ from pathlib import Path
 from typing import BinaryIO
 from xml.etree.ElementTree import ParseError
 
+from costpilot_core.material.material_extractor import MaterialExtractor
+from costpilot_core.models.material.extracted_material import ExtractedMaterial
 from costpilot_core.parsers.gaeb_tender_parser import GAEBTenderParser
+from costpilot_core.text.text_builder import TextBuilder
 from defusedxml.common import DefusedXmlException
 
 from app.domain.tender import TenderDetail, TenderDocument, TenderItemRecord
@@ -23,6 +26,14 @@ class TenderTooLargeError(Exception):
     pass
 
 
+class TenderItemNotFoundError(Exception):
+    pass
+
+
+class MaterialExtractionError(Exception):
+    pass
+
+
 class TenderService:
     ALLOWED_EXTENSIONS = frozenset({".xml", ".x83", ".x84", ".x86"})
     CHUNK_SIZE = 1024 * 1024
@@ -33,10 +44,12 @@ class TenderService:
         repository: TenderRepository,
         parser: GAEBTenderParser,
         max_upload_bytes: int,
+        material_extractor: MaterialExtractor,
     ) -> None:
         self._repository = repository
         self._parser = parser
         self._max_upload_bytes = max_upload_bytes
+        self._material_extractor = material_extractor
 
     def import_tender(
         self, *, project_id: int, file_name: str | None, stream: BinaryIO
@@ -83,6 +96,31 @@ class TenderService:
         self, *, project_id: int, tender_id: int
     ) -> list[TenderItemRecord] | None:
         return self._repository.list_items(project_id=project_id, tender_id=tender_id)
+
+    def extract_position_attributes(
+        self,
+        *,
+        project_id: int,
+        tender_id: int,
+        position_id: int,
+    ) -> ExtractedMaterial | None:
+        record = self._repository.get_item(
+            project_id=project_id,
+            tender_id=tender_id,
+            position_id=position_id,
+        )
+
+        if record is None:
+            raise TenderItemNotFoundError("Tender or position not found.")
+
+        text = TextBuilder.build_tender_item_text(record.item)
+
+        try:
+            return self._material_extractor.extract(text)
+        except ValueError as exc:
+            raise MaterialExtractionError(
+                "Material attribute extraction is ambiguous."
+            ) from exc
 
     @classmethod
     def _validate_filename(cls, filename: str | None) -> str:

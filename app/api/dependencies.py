@@ -19,15 +19,18 @@ def get_tender_service(request: Request) -> TenderService:
     return TenderService(
         repository=TenderRepository(request.app.state.db_pool),
         parser=GAEBTenderParser(),
+        material_extractor=request.app.state.material_extractor,
         max_upload_bytes=request.app.state.settings.tender_max_upload_bytes,
     )
 
 
 def get_matching_service(request: Request) -> MatchingService:
     pool = request.app.state.db_pool
+
     return MatchingService(
         tenders=TenderRepository(pool),
         search=CommoditySearchRepository(pool),
         matches=MatchRepository(pool),
         model_config_path=request.app.state.settings.models_config_path,
+        material_extractor=request.app.state.material_extractor,
     )

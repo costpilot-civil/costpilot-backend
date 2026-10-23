@@ -4,12 +4,16 @@ from fastapi import APIRouter, Depends, File, HTTPException, Path, UploadFile, s
 
 from app.api.dependencies import get_tender_service
 from app.api.schemas.tender import (
+    ExtractedMaterialResponse,
+    PositionAttributesResponse,
     TenderDetailResponse,
     TenderDocumentResponse,
     TenderItemRecordResponse,
 )
 from app.application.tender_service import (
     InvalidTenderError,
+    MaterialExtractionError,
+    TenderItemNotFoundError,
     TenderService,
     TenderTooLargeError,
     UnsupportedTenderError,
@@ -79,3 +83,40 @@ def list_items(
     if items is None:
         raise HTTPException(status_code=404, detail="Tender not found.")
     return [TenderItemRecordResponse.model_validate(record) for record in items]
+
+
+@router.get(
+    "/{tender_id}/items/{position_id}/attributes",
+    response_model=PositionAttributesResponse,
+)
+def get_position_attributes(
+    project_id: ProjectId,
+    tender_id: TenderId,
+    position_id: Annotated[int, Path(gt=0)],
+    service: TenderServiceDep,
+) -> PositionAttributesResponse:
+    try:
+        extracted = service.extract_position_attributes(
+            project_id=project_id,
+            tender_id=tender_id,
+            position_id=position_id,
+        )
+    except TenderItemNotFoundError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail=str(exc),
+        ) from exc
+    except MaterialExtractionError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=str(exc),
+        ) from exc
+
+    return PositionAttributesResponse(
+        position_id=position_id,
+        extracted_material=(
+            ExtractedMaterialResponse.model_validate(extracted)
+            if extracted is not None
+            else None
+        ),
+    )

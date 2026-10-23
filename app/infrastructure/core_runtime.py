@@ -20,22 +20,25 @@ class CoreUnavailableError(RuntimeError):
 
 
 @lru_cache(maxsize=2)
-def load_core_models(config_path: str):
-    embedding_cfg, reranker_cfg = load_model_config(config_path)
+def load_embedding_model(config_path: str) -> SentenceTransformerEmbedding:
+    embedding_cfg, _ = load_model_config(config_path)
 
-    embedding = SentenceTransformerEmbedding(
+    return SentenceTransformerEmbedding(
         model=SentenceTransformer(embedding_cfg["path"]),
         name=embedding_cfg["name"],
         version=embedding_cfg["version"],
     )
 
-    reranker = CrossEncoderReranker(
+
+@lru_cache(maxsize=2)
+def load_reranker_model(config_path: str) -> CrossEncoderReranker:
+    _, reranker_cfg = load_model_config(config_path)
+
+    return CrossEncoderReranker(
         model=CrossEncoder(reranker_cfg["path"]),
         name=reranker_cfg["name"],
         version=reranker_cfg["version"],
     )
-
-    return embedding, reranker
 
 
 def fuse_in_core(

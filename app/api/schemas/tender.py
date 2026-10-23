@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Any
 
 from costpilot_core.models.tender.tender import ParsedTender, TenderItem
 from pydantic import BaseModel, ConfigDict
@@ -38,3 +39,16 @@ class TenderItemRecordResponse(BaseModel):
     item: TenderItem
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ExtractedMaterialResponse(BaseModel):
+    material_type: str
+    core_attributes: dict[str, Any]
+    supplementary_attributes: dict[str, Any]
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class PositionAttributesResponse(BaseModel):
+    position_id: int
+    extracted_material: ExtractedMaterialResponse | None

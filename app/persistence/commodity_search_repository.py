@@ -7,6 +7,7 @@ Vector flow: PostgreSQL orders stored embeddings by the configured metric.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from collections import Counter
@@ -197,6 +198,82 @@ class CommoditySearchRepository:
                 score=(1.0 - float(row["distance"]))
                 if metric == "cosine"
                 else -float(row["distance"]),
+            )
+            for row in rows
+        ]
+
+    def structured_search(
+        self,
+        *,
+        material_type: str,
+        attributes: dict[str, Any],
+        query: str,
+        top_k: int,
+    ) -> list[MatchCandidate]:
+        if top_k <= 0:
+            return []
+
+        if not material_type.strip() or not attributes:
+            return []
+
+        with (
+            self._pool.connection() as conn,
+            conn.cursor(row_factory=dict_row) as cursor,
+        ):
+            # Analyze query text using the same PostgreSQL
+            # configuration as BM25 retrieval.
+            cursor.execute(
+                """
+                SELECT
+                    tsvector_to_array(
+                        to_tsvector('simple', %s)
+                    ) AS terms;
+                """,
+                (query,),
+            )
+
+            row = cursor.fetchone()
+            tokens = list(row["terms"])[:64] if row and row["terms"] else []
+
+            # Build an OR-based tsquery for candidate ranking.
+            tsquery = " | ".join(
+                "'" + term.replace("\\", "\\\\").replace("'", "''") + "'"
+                for term in tokens
+            )
+
+            cursor.execute(
+                """
+                SELECT
+                    s.commodity_id,
+                    ts_rank_cd(
+                        s.search_vector,
+                        to_tsquery('simple', %s)
+                    ) AS score
+                FROM commodity_search AS s
+                WHERE
+                    s.material_type = %s
+                    AND s.attributes @> %s::jsonb
+                ORDER BY
+                    score DESC,
+                    s.commodity_id ASC
+                LIMIT %s;
+                """,
+                (
+                    tsquery,
+                    material_type,
+                    json.dumps(attributes),
+                    top_k,
+                ),
+            )
+
+            rows = cursor.fetchall()
+
+        commodities = self._load_commodities([row["commodity_id"] for row in rows])
+
+        return [
+            MatchCandidate(
+                commodity=commodities[row["commodity_id"]],
+                score=float(row["score"]),
             )
             for row in rows
         ]

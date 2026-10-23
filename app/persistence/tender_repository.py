@@ -252,6 +252,57 @@ class TenderRepository:
 
         return result
 
+    def get_item(
+        self,
+        *,
+        project_id: int,
+        tender_id: int,
+        position_id: int,
+    ) -> TenderItemRecord | None:
+        with (
+            self._pool.connection() as conn,
+            conn.cursor(row_factory=dict_row) as cursor,
+        ):
+            cursor.execute(
+                """
+                SELECT
+                    i.id,
+                    i.oz,
+                    i.number_part,
+                    i.short_text,
+                    i.long_text,
+                    i.quantity,
+                    i.unit
+                FROM tender_items AS i
+                JOIN tender_documents AS d
+                    ON d.id = i.tender_document_id
+                WHERE
+                    d.project_id = %s
+                    AND d.id = %s
+                    AND i.id = %s;
+                """,
+                (project_id, tender_id, position_id),
+            )
+
+            row = cursor.fetchone()
+
+        if row is None:
+            return None
+
+        item = TenderItem(
+            oz=row["oz"],
+            number_part=row["number_part"],
+            short_text=row["short_text"],
+            long_text=row["long_text"],
+            quantity=row["quantity"],
+            unit=row["unit"],
+        )
+
+        return TenderItemRecord(
+            position_id=row["id"],
+            item=item,
+        )
+
     @staticmethod
     def _rebuild_structure(
         category_rows: list[dict[str, Any]],
