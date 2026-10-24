@@ -8,6 +8,7 @@ Vector flow: PostgreSQL orders stored embeddings by the configured metric.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 from collections import Counter
@@ -17,6 +18,10 @@ from costpilot_core.models.commodity.commodity import Commodity
 from costpilot_core.models.matching.match_candidate import MatchCandidate
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
+
+from app.logging.performance import StageTimer
+
+logger = logging.getLogger(__name__)
 
 
 class SearchDataUnavailableError(RuntimeError):
@@ -44,23 +49,40 @@ class CommoditySearchRepository:
     def _stats(self) -> tuple[int, float, Counter[str]]:
         if self._corpus_stats is not None:
             return self._corpus_stats
+
+        timer = StageTimer()
+
         with self._pool.connection() as conn, conn.cursor() as cursor:
             cursor.execute("SELECT search_vector::text FROM commodity_search;")
             vectors = [row[0] for row in cursor.fetchall()]
+
+        timer.mark("database_read")
+
         if not vectors:
             raise SearchDataUnavailableError("commodity_search has no rows.")
 
         doc_freq: Counter[str] = Counter()
         lengths = []
+
         for vector in vectors:
             tf = _frequencies(vector)
             doc_freq.update(tf.keys())
             lengths.append(sum(tf.values()))
+
         self._corpus_stats = (
             len(vectors),
             max(1.0, sum(lengths) / len(vectors)),
             doc_freq,
         )
+
+        timer.mark("statistics_calculation")
+
+        timer.report(
+            logger,
+            "bm25_corpus_statistics",
+            documents=len(vectors),
+        )
+
         return self._corpus_stats
 
     def bm25_search(
@@ -72,7 +94,11 @@ class CommoditySearchRepository:
         k1: float,
         b: float,
     ) -> list[MatchCandidate]:
+        timer = StageTimer()
+
         document_count, average_length, doc_freq = self._stats()
+        timer.mark("corpus_statistics")
+
         with (
             self._pool.connection() as conn,
             conn.cursor(row_factory=dict_row) as cursor,
@@ -83,7 +109,15 @@ class CommoditySearchRepository:
             )
             row = cursor.fetchone()
             tokens = list(row["terms"])[:64] if row and row["terms"] else []
+            timer.mark("tokenization_db")
+
             if not tokens:
+                timer.report(
+                    logger,
+                    "bm25_search",
+                    candidates=0,
+                    skipped="empty_tokens",
+                )
                 return []
 
             # All terms have first passed through the database analyzer. The
@@ -103,7 +137,10 @@ class CommoditySearchRepository:
                 """,
                 (tsquery, tsquery, candidate_pool),
             )
+            timer.mark("query_preprocess")
+
             matches = cursor.fetchall()
+            timer.mark("candidate_search_db")
 
         scored: list[tuple[int, float]] = []
         for match in matches:
@@ -119,14 +156,33 @@ class CommoditySearchRepository:
                 score += idf * frequency * (k1 + 1) / (frequency + length_factor)
             if score > 0:
                 scored.append((match["commodity_id"], score))
+        timer.mark("bm25_scoring")
 
         scored.sort(key=lambda item: (-item[1], item[0]))
         top = scored[:top_k]
+        timer.mark("sort_topk")
+
         commodities = self._load_commodities([commodity_id for commodity_id, _ in top])
-        return [
-            MatchCandidate(commodity=commodities[commodity_id], score=score)
+        timer.mark("commodity_load")
+
+        results = [
+            MatchCandidate(
+                commodity=commodities[commodity_id],
+                score=score,
+            )
             for commodity_id, score in top
         ]
+
+        timer.mark("postprocess")
+
+        timer.report(
+            logger,
+            "bm25_search",
+            candidate_pool_size=len(matches),
+            candidates=len(results),
+        )
+
+        return results
 
     def get_embedding_model(self, *, name: str, version: str) -> tuple[int, int, str]:
         with (
@@ -165,6 +221,8 @@ class CommoditySearchRepository:
         metric: str,
         top_k: int,
     ) -> list[MatchCandidate]:
+        timer = StageTimer()
+
         if len(query_vector) != dimension or any(
             not math.isfinite(float(value)) for value in query_vector
         ):
@@ -175,6 +233,9 @@ class CommoditySearchRepository:
         # Operator is selected from an internal whitelist only.
         operator = operators[metric]
         vector = "[" + ",".join(str(float(value)) for value in query_vector) + "]"
+
+        timer.mark("preprocess")
+
         with (
             self._pool.connection() as conn,
             conn.cursor(row_factory=dict_row) as cursor,
@@ -191,8 +252,12 @@ class CommoditySearchRepository:
             )
             rows = cursor.fetchall()
 
+        timer.mark("database_search")
+
         commodities = self._load_commodities([r["commodity_id"] for r in rows])
-        return [
+        timer.mark("commodity_load")
+
+        results = [
             MatchCandidate(
                 commodity=commodities[row["commodity_id"]],
                 score=(1.0 - float(row["distance"]))
@@ -202,6 +267,16 @@ class CommoditySearchRepository:
             for row in rows
         ]
 
+        timer.mark("postprocess")
+
+        timer.report(
+            logger,
+            "vector_search",
+            candidates=len(results),
+        )
+
+        return results
+
     def structured_search(
         self,
         *,
@@ -210,6 +285,8 @@ class CommoditySearchRepository:
         query: str,
         top_k: int,
     ) -> list[MatchCandidate]:
+        timer = StageTimer()
+
         if top_k <= 0:
             return []
 
@@ -234,6 +311,7 @@ class CommoditySearchRepository:
 
             row = cursor.fetchone()
             tokens = list(row["terms"])[:64] if row and row["terms"] else []
+            timer.mark("tokenization_db")
 
             # Build an OR-based tsquery for candidate ranking.
             tsquery = " | ".join(
@@ -267,16 +345,30 @@ class CommoditySearchRepository:
             )
 
             rows = cursor.fetchall()
+        timer.mark("database_search")
 
         commodities = self._load_commodities([row["commodity_id"] for row in rows])
+        timer.mark("commodity_load")
 
-        return [
+        results = [
             MatchCandidate(
                 commodity=commodities[row["commodity_id"]],
                 score=float(row["score"]),
             )
             for row in rows
         ]
+
+        timer.mark("postprocess")
+
+        timer.report(
+            logger,
+            "structured_search",
+            material_type=material_type,
+            attribute_count=len(attributes),
+            candidates=len(results),
+        )
+
+        return results
 
     def _load_commodities(self, ids: list[int]) -> dict[int, Commodity]:
         """Populate the *existing* Core Commodity model, not a backend clone.
@@ -286,6 +378,8 @@ class CommoditySearchRepository:
         """
         if not ids:
             return {}
+
+        timer = StageTimer()
         with (
             self._pool.connection() as conn,
             conn.cursor(row_factory=dict_row) as cursor,
@@ -326,8 +420,9 @@ class CommoditySearchRepository:
                 (ids, ids),
             )
             rows: list[dict[str, Any]] = list(cursor.fetchall())
+        timer.mark("database_query")
 
-        return {
+        commodities = {
             row["id"]: Commodity(
                 id=row["id"],
                 code=row["code"],
@@ -335,9 +430,23 @@ class CommoditySearchRepository:
                 unit=row["unit"],
                 category_path=" / ".join(
                     part
-                    for part in (row["product_group_name"], row["group_path"])
+                    for part in (
+                        row["product_group_name"],
+                        row["group_path"],
+                    )
                     if part
                 ),
             )
             for row in rows
         }
+
+        timer.mark("build_commodity_models")
+
+        timer.report(
+            logger,
+            "load_commodities",
+            requested=len(ids),
+            loaded=len(commodities),
+        )
+
+        return commodities

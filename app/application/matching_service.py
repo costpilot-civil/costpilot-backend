@@ -1,5 +1,6 @@
 """Orchestrates Core algorithms and PostgreSQL retrieval, no duplicate models."""
 
+import logging
 import math
 from pathlib import Path
 
@@ -16,9 +17,12 @@ from app.infrastructure.core_runtime import (
     load_embedding_model,
     load_reranker_model,
 )
+from app.logging.performance import StageTimer
 from app.persistence.commodity_search_repository import CommoditySearchRepository
 from app.persistence.match_repository import MatchRepository, TenderNotFoundError
 from app.persistence.tender_repository import TenderRepository
+
+logger = logging.getLogger(__name__)
 
 
 class MatchingService:
@@ -53,6 +57,14 @@ class MatchingService:
         self._bm25_b = matching["bm25_b"]
 
     def run(self, *, project_id: int, tender_id: int) -> list[TenderItemMatch]:
+        run_timer = StageTimer()
+
+        logger.info(
+            "Matching started | project_id=%d | tender_id=%d",
+            project_id,
+            tender_id,
+        )
+
         # --------------------------------------------------
         # 1. Load Tender Positions
         # --------------------------------------------------
@@ -61,16 +73,39 @@ class MatchingService:
             project_id=project_id,
             tender_id=tender_id,
         )
+        run_timer.mark("load_tender_positions")
 
         if items is None:
             raise TenderNotFoundError("Tender not found.")
 
         if not items:
+            save_timer = StageTimer()
+
             self._matches.save_results(
                 project_id=project_id,
                 tender_id=tender_id,
                 results=[],
             )
+
+            save_timer.mark("database_write")
+            run_timer.mark("database_save")
+
+            save_timer.report(
+                logger,
+                "matching_save",
+                project_id=project_id,
+                tender_id=tender_id,
+                results=0,
+            )
+
+            run_timer.report(
+                logger,
+                "matching_total",
+                project_id=project_id,
+                tender_id=tender_id,
+                positions=0,
+            )
+
             return []
 
         # --------------------------------------------------
@@ -78,11 +113,13 @@ class MatchingService:
         # --------------------------------------------------
 
         embedder = load_embedding_model(self._model_config_path)
+        run_timer.mark("embedding_model_load")
 
         model_id, dimension, metric = self._search.get_embedding_model(
             name=embedder.name,
             version=embedder.version,
         )
+        run_timer.mark("embedding_model_metadata")
 
         if embedder.dimension != dimension:
             raise ValueError("Core embedding dimension differs from database metadata.")
@@ -90,10 +127,14 @@ class MatchingService:
         # --------------------------------------------------
         # 3. Process Each Tender Position
         # --------------------------------------------------
+
         results: list[TenderItemMatch] = []
 
         for record in items:
+            timer = StageTimer()
+
             query = TextBuilder.build_tender_item_text(record.item)
+            timer.mark("query_preprocess")
 
             if not query:
                 results.append(
@@ -107,6 +148,15 @@ class MatchingService:
                         candidates=[],
                     )
                 )
+
+                timer.report(
+                    logger,
+                    "matching_position",
+                    project_id=project_id,
+                    tender_id=tender_id,
+                    position_id=record.position_id,
+                    skipped="empty_query",
+                )
                 continue
 
             # ----------------------------------------------
@@ -114,6 +164,7 @@ class MatchingService:
             # ----------------------------------------------
 
             query_vector = embedder.encode(query)
+            timer.mark("vector_embedding")
 
             vector = self._search.vector_search(
                 query_vector=query_vector,
@@ -122,6 +173,7 @@ class MatchingService:
                 metric=metric,
                 top_k=self._retrieval_top_k,
             )
+            timer.mark("vector_search")
 
             # ----------------------------------------------
             # 3.2 BM25 Retrieval
@@ -134,6 +186,7 @@ class MatchingService:
                 k1=self._bm25_k1,
                 b=self._bm25_b,
             )
+            timer.mark("bm25_search")
 
             # ----------------------------------------------
             # 3.3 Structured Retrieval
@@ -146,11 +199,14 @@ class MatchingService:
             except ValueError:
                 extracted = None
 
+            timer.mark("structured_extraction")
+
             if extracted is not None:
                 attributes = {
                     **extracted.core_attributes,
                     **extracted.supplementary_attributes,
                 }
+                timer.mark("structured_preprocess")
 
                 structured = self._search.structured_search(
                     material_type=extracted.material_type,
@@ -158,6 +214,7 @@ class MatchingService:
                     query=query,
                     top_k=self._retrieval_top_k,
                 )
+                timer.mark("structured_search")
 
             # ----------------------------------------------
             # 4. RRF Fusion
@@ -174,23 +231,29 @@ class MatchingService:
                 top_k=self._fusion_top_k,
                 rrf_k=self._rrf_k,
             )
+            timer.mark("rrf_fusion")
 
             # ----------------------------------------------
             # 5. Reranking
             # ----------------------------------------------
+
             reranker = load_reranker_model(self._model_config_path)
+            timer.mark("reranker_model_load")
 
             ranked: list[MatchCandidate] = []
+
             if fused:
                 documents = [
                     TextBuilder.build_commodity_text(candidate.commodity)
                     for candidate in fused
                 ]
+                timer.mark("reranker_preprocess")
 
                 scores = reranker.score_batch(
                     query=query,
                     documents=documents,
                 )
+                timer.mark("reranker_inference")
 
                 if len(scores) != len(fused):
                     raise ValueError(
@@ -218,6 +281,7 @@ class MatchingService:
                 )
 
                 ranked = ranked[: self._rerank_top_k]
+                timer.mark("reranker_postprocess")
 
             # ----------------------------------------------
             # 6. Build Matching Result
@@ -239,14 +303,56 @@ class MatchingService:
                 )
             )
 
+            timer.mark("result_build")
+
+            timer.report(
+                logger,
+                "matching_position",
+                project_id=project_id,
+                tender_id=tender_id,
+                position_id=record.position_id,
+                vector_candidates=len(vector),
+                bm25_candidates=len(bm25),
+                structured_candidates=len(structured),
+                fused_candidates=len(fused),
+                ranked_candidates=len(ranked),
+            )
+
+        run_timer.mark("positions_processing")
+
         # --------------------------------------------------
         # 7. Persist Matching Results
         # --------------------------------------------------
+
+        save_timer = StageTimer()
 
         self._matches.save_results(
             project_id=project_id,
             tender_id=tender_id,
             results=results,
+        )
+
+        save_timer.mark("database_write")
+        run_timer.mark("database_save")
+
+        save_timer.report(
+            logger,
+            "matching_save",
+            project_id=project_id,
+            tender_id=tender_id,
+            results=len(results),
+        )
+
+        # --------------------------------------------------
+        # 8. Matching Summary
+        # --------------------------------------------------
+
+        run_timer.report(
+            logger,
+            "matching_total",
+            project_id=project_id,
+            tender_id=tender_id,
+            positions=len(items),
         )
 
         return results

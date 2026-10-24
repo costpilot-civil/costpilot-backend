@@ -13,10 +13,13 @@ from app.api.routes.tenders import router as tenders_router
 from app.infrastructure.config import Settings
 from app.infrastructure.database import create_db_pool
 from app.infrastructure.material_runtime import build_material_extractor
+from app.logging.logging_config import setup_logging
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
+    setup_logging()
+
     settings = Settings()  # pyright: ignore[reportCallIssue]
     material_extractor = build_material_extractor()
     pool = create_db_pool(settings)
