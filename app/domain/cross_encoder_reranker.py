@@ -2,6 +2,7 @@ from collections.abc import Sequence
 
 from costpilot_core.reranking.reranker_model import RerankerModel
 from sentence_transformers import CrossEncoder
+from torch import nn
 
 
 class CrossEncoderReranker(RerankerModel):
@@ -43,10 +44,11 @@ class CrossEncoderReranker(RerankerModel):
         pairs = [(query, document) for document in documents]
 
         scores = self._model.predict(
-            pairs,
+            inputs=pairs,
             batch_size=self._batch_size,
             show_progress_bar=False,
             convert_to_numpy=True,
+            activation_fn=nn.Sigmoid(),
         )
 
         return [float(score) for score in scores]

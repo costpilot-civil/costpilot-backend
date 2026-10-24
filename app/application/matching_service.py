@@ -5,6 +5,7 @@ import math
 from pathlib import Path
 
 import yaml
+from costpilot_core.matching.match_decision import decide_match
 from costpilot_core.material.material_extractor import MaterialExtractor
 from costpilot_core.models.matching.match_candidate import MatchCandidate
 from costpilot_core.models.matching.match_result import MatchResult
@@ -55,6 +56,13 @@ class MatchingService:
         self._rrf_k = matching["rrf_k"]
         self._bm25_k1 = matching["bm25_k1"]
         self._bm25_b = matching["bm25_b"]
+        # Reranker scores are normalized to [0, 1] by CrossEncoderReranker.
+        self._min_score = float(matching.get("min_score", 0.60))
+        self._min_gap = float(matching.get("min_gap", 0.10))
+        if not 0 <= self._min_score <= 1 or not 0 <= self._min_gap <= 1:
+            raise ValueError(
+                "matching.min_score and matching.min_gap must be in [0, 1]."
+            )
 
     def run(self, *, project_id: int, tender_id: int) -> list[TenderItemMatch]:
         run_timer = StageTimer()
@@ -293,19 +301,30 @@ class MatchingService:
             # 6. Build Matching Result
             # ----------------------------------------------
 
-            result = MatchResult(
-                status=(
-                    MatchStatus.REVIEW_REQUIRED if ranked else MatchStatus.UNMATCHED
-                ),
-                commodity=(ranked[0].commodity if ranked else None),
+            result = decide_match(
+                ranked=ranked,
+                structured=structured,
+                min_score=self._min_score,
+                min_gap=self._min_gap,
             )
+
+            if result.status == MatchStatus.UNMATCHED:
+                selected_candidates: list[MatchCandidate] = []
+            elif result.status == MatchStatus.AUTO_MATCHED:
+                selected_candidates = ranked[:1]
+            else:
+                selected_candidates = [
+                    candidate
+                    for candidate in ranked
+                    if candidate.score >= self._min_score
+                ][: self._rerank_top_k]
 
             results.append(
                 TenderItemMatch(
                     position_id=record.position_id,
                     item=record.item,
                     result=result,
-                    candidates=ranked,
+                    candidates=selected_candidates,
                 )
             )
 
@@ -322,6 +341,9 @@ class MatchingService:
                 structured_candidates=len(structured),
                 fused_candidates=len(fused),
                 ranked_candidates=len(ranked),
+                selected_candidates=len(selected_candidates),
+                match_status=result.status.value,
+                top_score=(round(ranked[0].score, 4) if ranked else None),
             )
 
         run_timer.mark("positions_processing")
