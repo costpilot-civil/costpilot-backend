@@ -206,6 +206,12 @@ class MatchingService:
                     **extracted.core_attributes,
                     **extracted.supplementary_attributes,
                 }
+                if extracted.material_type == "concrete":
+                    logger.debug(
+                        "Concrete extraction | position_id=%s | attributes=%s",
+                        record.position_id,
+                        attributes,
+                    )
                 timer.mark("structured_preprocess")
 
                 structured = self._search.structured_search(
