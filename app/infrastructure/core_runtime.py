@@ -7,6 +7,7 @@ Those two Core symbols are the precise pending integration contracts.
 
 from functools import lru_cache
 
+import torch
 from costpilot_core.models.matching.match_candidate import MatchCandidate
 from sentence_transformers import CrossEncoder, SentenceTransformer
 
@@ -22,9 +23,10 @@ class CoreUnavailableError(RuntimeError):
 @lru_cache(maxsize=2)
 def load_embedding_model(config_path: str) -> SentenceTransformerEmbedding:
     embedding_cfg, _ = load_model_config(config_path)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
     return SentenceTransformerEmbedding(
-        model=SentenceTransformer(embedding_cfg["path"]),
+        model=SentenceTransformer(embedding_cfg["path"], device=device),
         name=embedding_cfg["name"],
         version=embedding_cfg["version"],
     )
@@ -33,9 +35,10 @@ def load_embedding_model(config_path: str) -> SentenceTransformerEmbedding:
 @lru_cache(maxsize=2)
 def load_reranker_model(config_path: str) -> CrossEncoderReranker:
     _, reranker_cfg = load_model_config(config_path)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
     return CrossEncoderReranker(
-        model=CrossEncoder(reranker_cfg["path"]),
+        model=CrossEncoder(reranker_cfg["path"], device=device),
         name=reranker_cfg["name"],
         version=reranker_cfg["version"],
     )
